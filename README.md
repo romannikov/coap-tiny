@@ -1,2 +1,2 @@
-# embedded-coap
-COAP implementation for embedded devices
+# coap-tiby
+Tiny COAP implementation for embedded devices.

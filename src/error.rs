@@ -1,5 +1,4 @@
 use core::{fmt, num::TryFromIntError};
-
 use heapless::String;
 
 /// The errors that can occur when encoding/decoding packets.
@@ -10,7 +9,8 @@ pub enum MessageError {
     InvalidTokenLength,
     InvalidOptionDelta,
     InvalidOptionLength,
-    InvalidOption,
+    OptionsLimitExceeded,
+    PathLengthExceeded,
 }
 
 impl fmt::Display for MessageError {
@@ -34,8 +34,11 @@ impl fmt::Display for MessageError {
             MessageError::InvalidOptionLength => {
                 write!(f, "CoAP error: invalid option length")
             }
-            MessageError::InvalidOption => {
-                write!(f, "CoAP error: invalid option")
+            MessageError::OptionsLimitExceeded => {
+                write!(f, "CoAP error: options limit exceeded")
+            }
+            MessageError::PathLengthExceeded => {
+                write!(f, "CoAP error: path length exceeded")
             }
         }
     }

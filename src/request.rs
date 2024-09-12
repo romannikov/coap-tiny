@@ -1,12 +1,10 @@
-use core::convert::TryFrom;
-
-use heapless::String;
-
 use crate::{
-    error::InvalidObserve,
+    error::{InvalidObserve, MessageError},
     packet::{CoapOption, MessageClass, ObserveOption, Packet, RequestType},
     PATH_MAX_SIZE,
 };
+use core::convert::TryFrom;
+use heapless::String;
 
 /// The CoAP request.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,12 +34,17 @@ impl<'a, Endpoint> CoapRequest<'a, Endpoint> {
         }
     }
 
-    pub fn get_path(&self) -> String<PATH_MAX_SIZE> {
+    pub fn get_path(&self) -> Result<String<PATH_MAX_SIZE>, MessageError> {
         let mut s = String::<PATH_MAX_SIZE>::new();
         for option_pair in self.message.get_options(CoapOption::UriPath) {
-            let _ = s.push_str(core::str::from_utf8(option_pair.value).unwrap());
+            match s.push_str(core::str::from_utf8(option_pair.value).unwrap()) {
+                Err(_) => {
+                    return Err(MessageError::PathLengthExceeded);
+                }
+                _ => {}
+            }
         }
-        return s;
+        return Ok(s);
     }
 
     /// Returns the flag in the Observe option or InvalidObserve if the flag
@@ -58,14 +61,11 @@ impl<'a, Endpoint> CoapRequest<'a, Endpoint> {
 
 #[cfg(test)]
 mod test {
-    use core::str::FromStr;
-
-    use heapless::Vec;
-
     use super::*;
     use crate::packet::{MessageType, OptionPair};
+    use heapless::Vec;
 
-    struct Endpoint(String<20>);
+    struct Endpoint(());
 
     #[test]
     fn test_request_create() {
@@ -82,9 +82,30 @@ mod test {
             /* options= */ &mut Vec::from_slice(options).unwrap(),
             /* payload= */ "Hello".as_bytes(),
         );
-        let endpoint = Endpoint(String::from_str("127.0.0.1:1234").unwrap());
-        let request = CoapRequest::from_packet(&packet, endpoint);
+        let request = CoapRequest::from_packet(&packet, Endpoint(()));
 
         assert!(request.source.is_some())
+    }
+
+    #[test]
+    fn path_length_exceeded() {
+        let buf = [
+            0x40, 0x01, 0x00, 0x00, 0xbd, 0x77, 0x2f, 0x73, 0x6f, 0x6d, 0x65, 0x2d, 0x73, 0x75,
+            0x70, 0x65, 0x72, 0x2d, 0x6c, 0x6f, 0x6e, 0x67, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x31,
+            0x2f, 0x73, 0x6f, 0x6d, 0x65, 0x2d, 0x73, 0x75, 0x70, 0x65, 0x72, 0x2d, 0x6c, 0x6f,
+            0x6e, 0x67, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x32, 0x2f, 0x73, 0x6f, 0x6d, 0x65, 0x2d,
+            0x73, 0x75, 0x70, 0x65, 0x72, 0x2d, 0x6c, 0x6f, 0x6e, 0x67, 0x2d, 0x70, 0x61, 0x74,
+            0x68, 0x33, 0x2f, 0x73, 0x6f, 0x6d, 0x65, 0x2d, 0x73, 0x75, 0x70, 0x65, 0x72, 0x2d,
+            0x6c, 0x6f, 0x6e, 0x67, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x34, 0x2f, 0x73, 0x6f, 0x6d,
+            0x65, 0x2d, 0x73, 0x75, 0x70, 0x65, 0x72, 0x2d, 0x6c, 0x6f, 0x6e, 0x67, 0x2d, 0x70,
+            0x61, 0x74, 0x68, 0x35, 0x2f, 0x73, 0x6f, 0x6d, 0x65, 0x2d, 0x73, 0x75, 0x70, 0x65,
+            0x72, 0x2d, 0x6c, 0x6f, 0x6e, 0x67, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x36,
+        ];
+        let p = Packet::from_bytes(&buf).unwrap();
+        let request = CoapRequest::from_packet(&p, Endpoint(()));
+        assert_eq!(
+            MessageError::PathLengthExceeded,
+            request.get_path().unwrap_err()
+        );
     }
 }

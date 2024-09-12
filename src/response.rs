@@ -8,7 +8,7 @@ pub struct CoapResponse<'a> {
 
 impl<'a> CoapResponse<'a> {
     /// Creates a new response.
-    pub fn from_packet<'b>(packet: &'b Packet) -> CoapResponse<'b> {
+    pub fn new<'b>(packet: &'b Packet) -> CoapResponse<'b> {
         CoapResponse { message: packet }
     }
 
@@ -60,24 +60,21 @@ impl<'a> CoapResponse<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::packet::MessageType;
+    use heapless::Vec;
 
     #[test]
-    fn test_new_response_valid() {
-        for mtyp in [MessageType::Confirmable, MessageType::NonConfirmable] {
-            let mut packet = Packet::new();
-            packet.header.set_type(mtyp);
-            let opt_resp = CoapResponse::new(&packet);
-            assert!(opt_resp.is_some());
-
-            let response = opt_resp.unwrap();
-            assert_eq!(packet.payload, response.message.payload);
-        }
+    fn test_new_response() {
+        let packet = Packet::new(
+            MessageType::Confirmable,
+            MessageClass::Response(ResponseType::Content),
+            /* version= */ 2,
+            /* message_id= */ 42,
+            /* token= */ &[0x17, 0x38],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ "Hello".as_bytes(),
+        );
+        let opt_resp = CoapResponse::new(&packet);
+        assert_eq!(opt_resp.get_status(), &ResponseType::Content);
     }
-
-    // #[test]
-    // fn test_new_response_invalid() {
-    //     let mut packet = Packet::new();
-    //     packet.header.set_type(MessageType::Acknowledgement);
-    //     assert!(CoapResponse::new(&packet).is_none());
-    // }
 }

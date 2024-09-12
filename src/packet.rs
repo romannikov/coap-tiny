@@ -1,13 +1,9 @@
-use core::convert::TryFrom;
-
-use crate::{
-    error::{
-        IncompatibleOptionValueFormat, InvalidContentFormat, InvalidObserve,
-        MessageError,
-    },
-    header::{Header, HeaderRaw, MessageClass},
-    option_value::{OptionValueType, OptionValueU16, OptionValueU32},
+use crate::error::{
+    IncompatibleOptionValueFormat, InvalidContentFormat, InvalidObserve, MessageError,
 };
+use crate::{MAX_OPTIONS, PACKET_MAX_SIZE};
+use core::{convert::TryFrom, fmt::Write};
+use heapless::{String, Vec};
 
 macro_rules! u8_to_unsigned_be {
     ($src:ident, $start:expr, $end:expr, $t:ty) => ({
@@ -15,6 +11,171 @@ macro_rules! u8_to_unsigned_be {
             0, |acc, i| acc | $src[$start+i] as $t << i * 8
         )
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageClass {
+    Empty,
+    Request(RequestType),
+    Response(ResponseType),
+    Reserved(u8),
+}
+
+impl From<u8> for MessageClass {
+    fn from(number: u8) -> MessageClass {
+        match number {
+            0x00 => MessageClass::Empty,
+
+            0x01 => MessageClass::Request(RequestType::Get),
+            0x02 => MessageClass::Request(RequestType::Post),
+            0x03 => MessageClass::Request(RequestType::Put),
+            0x04 => MessageClass::Request(RequestType::Delete),
+            0x05 => MessageClass::Request(RequestType::Fetch),
+            0x06 => MessageClass::Request(RequestType::Patch),
+            0x07 => MessageClass::Request(RequestType::IPatch),
+
+            0x41 => MessageClass::Response(ResponseType::Created),
+            0x42 => MessageClass::Response(ResponseType::Deleted),
+            0x43 => MessageClass::Response(ResponseType::Valid),
+            0x44 => MessageClass::Response(ResponseType::Changed),
+            0x45 => MessageClass::Response(ResponseType::Content),
+            0x5F => MessageClass::Response(ResponseType::Continue),
+
+            0x80 => MessageClass::Response(ResponseType::BadRequest),
+            0x81 => MessageClass::Response(ResponseType::Unauthorized),
+            0x82 => MessageClass::Response(ResponseType::BadOption),
+            0x83 => MessageClass::Response(ResponseType::Forbidden),
+            0x84 => MessageClass::Response(ResponseType::NotFound),
+            0x85 => MessageClass::Response(ResponseType::MethodNotAllowed),
+            0x86 => MessageClass::Response(ResponseType::NotAcceptable),
+            0x89 => MessageClass::Response(ResponseType::Conflict),
+            0x8C => MessageClass::Response(ResponseType::PreconditionFailed),
+            0x8D => MessageClass::Response(ResponseType::RequestEntityTooLarge),
+            0x8F => MessageClass::Response(ResponseType::UnsupportedContentFormat),
+            0x88 => MessageClass::Response(ResponseType::RequestEntityIncomplete),
+            0x96 => MessageClass::Response(ResponseType::UnprocessableEntity),
+            0x9d => MessageClass::Response(ResponseType::TooManyRequests),
+
+            0xA0 => MessageClass::Response(ResponseType::InternalServerError),
+            0xA1 => MessageClass::Response(ResponseType::NotImplemented),
+            0xA2 => MessageClass::Response(ResponseType::BadGateway),
+            0xA3 => MessageClass::Response(ResponseType::ServiceUnavailable),
+            0xA4 => MessageClass::Response(ResponseType::GatewayTimeout),
+            0xA5 => MessageClass::Response(ResponseType::ProxyingNotSupported),
+            0xA8 => MessageClass::Response(ResponseType::HopLimitReached),
+
+            n => MessageClass::Reserved(n),
+        }
+    }
+}
+
+impl From<MessageClass> for u8 {
+    fn from(class: MessageClass) -> u8 {
+        match class {
+            MessageClass::Empty => 0x00,
+
+            MessageClass::Request(RequestType::Get) => 0x01,
+            MessageClass::Request(RequestType::Post) => 0x02,
+            MessageClass::Request(RequestType::Put) => 0x03,
+            MessageClass::Request(RequestType::Delete) => 0x04,
+            MessageClass::Request(RequestType::Fetch) => 0x05,
+            MessageClass::Request(RequestType::Patch) => 0x06,
+            MessageClass::Request(RequestType::IPatch) => 0x07,
+            MessageClass::Request(RequestType::UnKnown) => 0xFF,
+
+            MessageClass::Response(ResponseType::Created) => 0x41,
+            MessageClass::Response(ResponseType::Deleted) => 0x42,
+            MessageClass::Response(ResponseType::Valid) => 0x43,
+            MessageClass::Response(ResponseType::Changed) => 0x44,
+            MessageClass::Response(ResponseType::Content) => 0x45,
+            MessageClass::Response(ResponseType::Continue) => 0x5F,
+
+            MessageClass::Response(ResponseType::BadRequest) => 0x80,
+            MessageClass::Response(ResponseType::Unauthorized) => 0x81,
+            MessageClass::Response(ResponseType::BadOption) => 0x82,
+            MessageClass::Response(ResponseType::Forbidden) => 0x83,
+            MessageClass::Response(ResponseType::NotFound) => 0x84,
+            MessageClass::Response(ResponseType::MethodNotAllowed) => 0x85,
+            MessageClass::Response(ResponseType::NotAcceptable) => 0x86,
+            MessageClass::Response(ResponseType::Conflict) => 0x89,
+            MessageClass::Response(ResponseType::PreconditionFailed) => 0x8C,
+            MessageClass::Response(ResponseType::RequestEntityTooLarge) => 0x8D,
+            MessageClass::Response(ResponseType::UnsupportedContentFormat) => 0x8F,
+            MessageClass::Response(ResponseType::RequestEntityIncomplete) => 0x88,
+            MessageClass::Response(ResponseType::UnprocessableEntity) => 0x96,
+            MessageClass::Response(ResponseType::TooManyRequests) => 0x9d,
+
+            MessageClass::Response(ResponseType::InternalServerError) => 0xA0,
+            MessageClass::Response(ResponseType::NotImplemented) => 0xA1,
+            MessageClass::Response(ResponseType::BadGateway) => 0xA2,
+            MessageClass::Response(ResponseType::ServiceUnavailable) => 0xA3,
+            MessageClass::Response(ResponseType::GatewayTimeout) => 0xA4,
+            MessageClass::Response(ResponseType::ProxyingNotSupported) => 0xA5,
+            MessageClass::Response(ResponseType::HopLimitReached) => 0xA8,
+            MessageClass::Response(ResponseType::UnKnown) => 0xFF,
+
+            MessageClass::Reserved(c) => c,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RequestType {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Fetch,
+    Patch,
+    IPatch,
+    UnKnown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResponseType {
+    // 200 Codes
+    Created,
+    Deleted,
+    Valid,
+    Changed,
+    Content,
+    Continue,
+
+    // 400 Codes
+    BadRequest,
+    Unauthorized,
+    BadOption,
+    Forbidden,
+    NotFound,
+    MethodNotAllowed,
+    NotAcceptable,
+    Conflict,
+    PreconditionFailed,
+    RequestEntityTooLarge,
+    UnsupportedContentFormat,
+    RequestEntityIncomplete,
+    UnprocessableEntity,
+    TooManyRequests,
+
+    // 500 Codes
+    InternalServerError,
+    NotImplemented,
+    BadGateway,
+    ServiceUnavailable,
+    GatewayTimeout,
+    ProxyingNotSupported,
+    HopLimitReached,
+
+    UnKnown,
+}
+
+/// CoAP request/response message type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageType {
+    Confirmable,
+    NonConfirmable,
+    Acknowledgement,
+    Reset,
 }
 
 /// The CoAP options.
@@ -107,11 +268,11 @@ impl From<CoapOption> for u16 {
 #[non_exhaustive]
 pub enum ContentFormat {
     TextPlain,
-    /// Media-Type: `application/cose; cose-type="cose-encrypt0"`, ID: 16
+    // Media-Type: `application/cose; cose-type="cose-encrypt0"`, ID: 16
     ApplicationCoseEncrypt0,
-    /// Media-Type: `application/cose; cose-type="cose-mac0"`, ID: 17
+    // Media-Type: `application/cose; cose-type="cose-mac0"`, ID: 17
     ApplicationCoseMac0,
-    /// Media-Type: `application/cose; cose-type="cose-sign1"`, ID: 18
+    // Media-Type: `application/cose; cose-type="cose-sign1"`, ID: 18
     ApplicationCoseSign1,
     ApplicationAceCbor,
     ImageGif,
@@ -128,11 +289,11 @@ pub enum ContentFormat {
     ApplicationCWt,
     ApplicationMultipartCore,
     ApplicationCborSeq,
-    /// Media-Type: `application/cose; cose-type="cose-encrypt"`, ID: 96
+    // Media-Type: `application/cose; cose-type="cose-encrypt"`, ID: 96
     ApplicationCoseEncrypt,
-    /// Media-Type: `application/cose; cose-type="cose-mac"`, ID: 97
+    // Media-Type: `application/cose; cose-type="cose-mac"`, ID: 97
     ApplicationCoseMac,
-    /// Media-Type: `application/cose; cose-type="cose-sign"`, ID: 98
+    // Media-Type: `application/cose; cose-type="cose-sign"`, ID: 98
     ApplicationCoseSign,
     ApplicationCoseKey,
     ApplicationCoseKeySet,
@@ -142,14 +303,14 @@ pub enum ContentFormat {
     ApplicationSensmlCBOR,
     ApplicationSenmlExi,
     ApplicationSensmlExi,
-    /// Media-Type: `application/yang-data+cbor; id=sid`, ID: 140
+    // Media-Type: `application/yang-data+cbor; id=sid`, ID: 140
     ApplicationYangDataCborSid,
     ApplicationCoapGroupJson,
     ApplicationDotsCbor,
     ApplicationMissingBlocksCborSeq,
-    /// Media-Type: `application/pkcs7-mime; smime-type=server-generated-key`, ID: 280
+    // Media-Type: `application/pkcs7-mime; smime-type=server-generated-key`, ID: 280
     ApplicationPkcs7MimeServerGeneratedKey,
-    /// Media-Type: `application/pkcs7-mime; smime-type=certs-only`, ID: 281
+    // Media-Type: `application/pkcs7-mime; smime-type=certs-only`, ID: 281
     ApplicationPkcs7MimeCertsOnly,
     ApplicationPkcs8,
     ApplicationCsrattrs,
@@ -162,7 +323,7 @@ pub enum ContentFormat {
     ApplicationSenmlEtchJson,
     ApplicationSenmlEtchCbor,
     ApplicationYangDataCbor,
-    /// Media-Type: `application/yang-data+cbor; id=name`, ID: 341
+    // Media-Type: `application/yang-data+cbor; id=name`, ID: 341
     ApplicationYangDataCborName,
     ApplicationTdJson,
     ApplicationVoucherCoseCbor,
@@ -315,7 +476,7 @@ impl From<ContentFormat> for usize {
     }
 }
 
-/// The values of the observe option.
+// The values of the observe option.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ObserveOption {
     Register,
@@ -343,317 +504,272 @@ impl From<ObserveOption> for usize {
     }
 }
 
-/// The CoAP packet.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Packet {
-    pub header: Header,
-    token: Vec<u8>,
-    pub(crate) options: BTreeMap<u16, LinkedList<Vec<u8>>>,
-    pub payload: Vec<u8>,
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OptionPair<'a> {
+    pub num: u16,
+    pub value: &'a [u8],
 }
 
-/// An iterator over the options of a packet.
-pub type Options<'a> =
-    alloc::collections::btree_map::Iter<'a, u16, LinkedList<Vec<u8>>>;
+#[derive(Debug, Clone, PartialEq)]
+pub struct Packet<'a> {
+    /// Version, message type and token length byte.
+    ver_type_tkl: u8,
+    code: MessageClass,
+    message_id: u16,
+    pub token: &'a [u8],
+    /// Sorted by OptionPair.num vector of options.
+    pub options: Vec<OptionPair<'a>, MAX_OPTIONS>,
+    pub payload: &'a [u8],
+}
 
-impl Packet {
-    // Maximum allowed packet size.
-    pub const MAX_SIZE: usize = 1280;
+impl<'a> Packet<'a> {
+    pub fn new(
+        t: MessageType,
+        code: MessageClass,
+        version: u8,
+        message_id: u16,
+        token: &'a [u8],
+        options: &mut Vec<OptionPair<'a>, MAX_OPTIONS>,
+        payload: &'a [u8],
+    ) -> Self {
+        let tn = match t {
+            MessageType::Confirmable => 0,
+            MessageType::NonConfirmable => 1,
+            MessageType::Acknowledgement => 2,
+            MessageType::Reset => 3,
+        };
+        // Set version.
+        let mut ver_type_tkl = version << 6;
+        // Set type.
+        ver_type_tkl = tn << 4 | (0xCF & ver_type_tkl);
+        // Set token length.
+        assert_eq!(0xF0 & token.len(), 0);
+        ver_type_tkl = (token.len() as u8) | (0xF0 & ver_type_tkl);
 
-    /// Creates a new packet.
-    pub fn new() -> Packet {
-        Default::default()
+        Self::sort_option_pairs(options);
+
+        Packet {
+            ver_type_tkl,
+            code,
+            message_id,
+            token,
+            options: Vec::<OptionPair<'a>, MAX_OPTIONS>::from_iter(options.iter().cloned()),
+            payload,
+        }
     }
 
-    /// Returns an iterator over the options of the packet.
-    pub fn options(&self) -> Options {
+    fn sort_option_pairs<'b, const MAX_OPTIONS: usize>(vec: &mut Vec<OptionPair<'b>, MAX_OPTIONS>) {
+        let len = vec.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 && vec[j - 1].num > vec[j].num {
+                vec.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get_version(&self) -> u8 {
+        self.ver_type_tkl >> 6
+    }
+
+    #[inline]
+    pub fn get_type(&self) -> MessageType {
+        let tn = (0x30 & self.ver_type_tkl) >> 4;
+        match tn {
+            0 => MessageType::Confirmable,
+            1 => MessageType::NonConfirmable,
+            2 => MessageType::Acknowledgement,
+            3 => MessageType::Reset,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn get_token_length(&self) -> u8 {
+        Self::get_token_length_internal(self.ver_type_tkl)
+    }
+
+    fn get_token_length_internal(ver_type_tkl: u8) -> u8 {
+        0x0F & ver_type_tkl
+    }
+
+    #[inline]
+    pub fn get_message_id(&self) -> u16 {
+        self.message_id
+    }
+
+    pub fn options(&self) -> core::slice::Iter<'_, OptionPair<'_>> {
         self.options.iter()
     }
 
-    /// Sets the token.
-    pub fn set_token(&mut self, token: Vec<u8>) {
-        self.header.set_token_length(token.len() as u8);
-        self.token = token;
+    pub fn get_code(&self) -> MessageClass {
+        self.code
     }
 
-    /// Returns the token.
     pub fn get_token(&self) -> &[u8] {
         &self.token
     }
 
-    /// Sets an option's values.
-    pub fn set_option(&mut self, tp: CoapOption, value: LinkedList<Vec<u8>>) {
-        self.options.insert(tp.into(), value);
+    pub fn get_options(&self, tp: CoapOption) -> impl Iterator<Item = &OptionPair<'a>> {
+        self.options.iter().filter(move |&p| p.num == tp.into())
     }
 
-    /// Sets an option's values using a structured option value format.
-    pub fn set_options_as<T: OptionValueType>(
-        &mut self,
-        tp: CoapOption,
-        value: LinkedList<T>,
-    ) {
-        let raw_value = value.into_iter().map(|x| x.into()).collect();
-        self.set_option(tp, raw_value);
+    pub fn get_first_option(&self, tp: CoapOption) -> Option<&OptionPair<'a>> {
+        self.options.iter().find(|&p| p.num == tp.into())
     }
 
-    /// Returns an option's values.
-    pub fn get_option(&self, tp: CoapOption) -> Option<&LinkedList<Vec<u8>>> {
-        self.options.get(&tp.into())
+    pub fn get_content_format_value(&self) -> Option<u16> {
+        self.get_first_option(CoapOption::ContentFormat)
+            .map(|option| self.to_uint::<u16>(option.value))
+            .and_then(|value| value.ok())
     }
 
-    /// Returns an option's values all decoded using the specified structured
-    /// option value format.
-    pub fn get_options_as<T: OptionValueType>(
-        &self,
-        tp: CoapOption,
-    ) -> Option<LinkedList<Result<T, IncompatibleOptionValueFormat>>> {
-        self.get_option(tp).map(|options| {
-            options
-                .iter()
-                .map(|raw_value| T::try_from(raw_value.clone()))
-                .collect()
+    pub fn get_observe_value(&self) -> Option<u32> {
+        self.get_first_option(CoapOption::Observe)
+            .map(|option| self.to_uint::<u32>(option.value))
+            .and_then(|value| value.ok())
+    }
+
+    pub fn from_bytes<'b>(buf: &'b [u8]) -> Result<Packet<'b>, MessageError> {
+        let header_result = Self::try_header(buf);
+        if header_result.is_err() {
+            return Err(header_result.unwrap_err());
+        }
+        let raw_header = header_result.unwrap();
+        let token_length = Self::get_token_length_internal(raw_header.0);
+        let options_start: usize = 4 + token_length as usize;
+
+        if token_length > 8 {
+            return Err(MessageError::InvalidTokenLength);
+        }
+
+        if options_start > buf.len() {
+            return Err(MessageError::InvalidTokenLength);
+        }
+        let token = &buf[4..options_start];
+
+        let mut idx = options_start;
+        let mut options_number = 0;
+        let mut options = Vec::<OptionPair, MAX_OPTIONS>::new();
+        while idx < buf.len() {
+            let byte = buf[idx];
+
+            if byte == 255 || idx > buf.len() {
+                break;
+            }
+
+            let mut delta = (byte >> 4) as u16;
+            let mut length = (byte & 0xF) as usize;
+
+            idx += 1;
+
+            // Check for special delta characters
+            match delta {
+                13 => {
+                    if idx >= buf.len() {
+                        return Err(MessageError::InvalidOptionLength);
+                    }
+                    delta = (buf[idx] + 13).into();
+                    idx += 1;
+                }
+                14 => {
+                    if idx + 1 >= buf.len() {
+                        return Err(MessageError::InvalidOptionLength);
+                    }
+
+                    delta = u16::from_be(u8_to_unsigned_be!(buf, idx, idx + 1, u16)) + 269;
+                    idx += 2;
+                }
+                15 => {
+                    return Err(MessageError::InvalidOptionDelta);
+                }
+                _ => {}
+            };
+
+            // Check for special length characters
+            match length {
+                13 => {
+                    if idx >= buf.len() {
+                        return Err(MessageError::InvalidOptionLength);
+                    }
+
+                    length = buf[idx] as usize + 13;
+                    idx += 1;
+                }
+                14 => {
+                    if idx + 1 >= buf.len() {
+                        return Err(MessageError::InvalidOptionLength);
+                    }
+
+                    length =
+                        (u16::from_be(u8_to_unsigned_be!(buf, idx, idx + 1, u16)) + 269) as usize;
+                    idx += 2;
+                }
+                15 => {
+                    return Err(MessageError::InvalidOptionLength);
+                }
+                _ => {}
+            };
+
+            options_number += delta;
+
+            let end = idx + length;
+            if end > buf.len() {
+                return Err(MessageError::InvalidOptionLength);
+            }
+            match options.push(OptionPair {
+                num: options_number,
+                value: &buf[idx..end],
+            }) {
+                Err(_) => return Err(MessageError::OptionsLimitExceeded),
+                _ => {}
+            }
+
+            idx += length;
+        }
+
+        let payload = if idx < buf.len() {
+            &buf[(idx + 1)..buf.len()]
+        } else {
+            &[0; 0]
+        };
+
+        Ok(Packet {
+            ver_type_tkl: raw_header.0,
+            code: raw_header.1.into(),
+            message_id: raw_header.2,
+            token,
+            options: options,
+            payload: payload,
         })
     }
 
-    /// Returns an option's first value as a convenience when only one is
-    /// expected.
-    pub fn get_first_option(&self, tp: CoapOption) -> Option<&Vec<u8>> {
-        self.options
-            .get(&tp.into())
-            .and_then(|options| options.front())
-    }
-
-    /// Returns an option's first value as a convenience when only one is
-    /// expected.
-    pub fn get_first_option_as<T: OptionValueType>(
-        &self,
-        tp: CoapOption,
-    ) -> Option<Result<T, IncompatibleOptionValueFormat>> {
-        self.get_first_option(tp)
-            .map(|value| T::try_from(value.clone()))
-    }
-
-    /// Adds an option value.
-    pub fn add_option(&mut self, tp: CoapOption, value: Vec<u8>) {
-        let num = tp.into();
-        if let Some(list) = self.options.get_mut(&num) {
-            list.push_back(value);
-            return;
+    fn try_header(buf: &[u8]) -> Result<(u8, u8, u16), MessageError> {
+        if buf.len() < 4 {
+            return Err(MessageError::InvalidPacketLength);
         }
 
-        let mut list = LinkedList::new();
-        list.push_back(value);
-        self.options.insert(num, list);
+        let mut id_bytes = [0; 2];
+        id_bytes.copy_from_slice(&buf[2..4]);
+
+        Ok((buf[0], buf[1], u16::from_be_bytes(id_bytes)))
     }
 
-    /// Adds an option value using a structured option value format.
-    pub fn add_option_as<T: OptionValueType>(
-        &mut self,
-        tp: CoapOption,
-        value: T,
-    ) {
-        self.add_option(tp, value.into());
-    }
-
-    /// Removes an option.
-    pub fn clear_option(&mut self, tp: CoapOption) {
-        if let Some(list) = self.options.get_mut(&tp.into()) {
-            list.clear()
-        }
-    }
-
-    /// Removes all options.
-    pub fn clear_all_options(&mut self) {
-        self.options.clear()
-    }
-
-    /// Sets the content-format.
-    pub fn set_content_format(&mut self, cf: ContentFormat) {
-        let content_format: u16 = u16::try_from(usize::from(cf)).unwrap();
-        self.add_option_as(
-            CoapOption::ContentFormat,
-            OptionValueU16(content_format),
-        );
-    }
-
-    /// Returns the content-format.
-    pub fn get_content_format(&self) -> Option<ContentFormat> {
-        self.get_first_option_as::<OptionValueU16>(CoapOption::ContentFormat)
-            .and_then(|option| option.ok())
-            .map(|value| usize::from(value.0))
-            .and_then(|value| ContentFormat::try_from(value).ok())
-    }
-
-    /// Sets the value of the observe option.
-    pub fn set_observe_value(&mut self, value: u32) {
-        self.clear_option(CoapOption::Observe);
-        self.add_option_as(CoapOption::Observe, OptionValueU32(value));
-    }
-
-    /// Returns the value of the observe option.
-    pub fn get_observe_value(
-        &self,
-    ) -> Option<Result<u32, IncompatibleOptionValueFormat>> {
-        self.get_first_option_as::<OptionValueU32>(CoapOption::Observe)
-            .map(|option| option.map(|value| value.0))
-    }
-
-    /// Decodes a byte slice and constructs the equivalent packet.
-    pub fn from_bytes(buf: &[u8]) -> Result<Packet, MessageError> {
-        let header_result = HeaderRaw::try_from(buf);
-        match header_result {
-            Ok(raw_header) => {
-                let header = Header::from_raw(&raw_header);
-                let token_length = header.get_token_length();
-                let options_start: usize = 4 + token_length as usize;
-
-                if token_length > 8 {
-                    return Err(MessageError::InvalidTokenLength);
-                }
-
-                if options_start > buf.len() {
-                    return Err(MessageError::InvalidTokenLength);
-                }
-
-                let token = buf[4..options_start].to_vec();
-
-                let mut idx = options_start;
-                let mut options_number = 0;
-                let mut options: BTreeMap<u16, LinkedList<Vec<u8>>> =
-                    BTreeMap::new();
-                while idx < buf.len() {
-                    let byte = buf[idx];
-
-                    if byte == 255 || idx > buf.len() {
-                        break;
-                    }
-
-                    let mut delta = (byte >> 4) as u16;
-                    let mut length = (byte & 0xF) as usize;
-
-                    idx += 1;
-
-                    // Check for special delta characters
-                    match delta {
-                        13 => {
-                            if idx >= buf.len() {
-                                return Err(MessageError::InvalidOptionLength);
-                            }
-                            delta = (buf[idx] + 13).into();
-                            idx += 1;
-                        }
-                        14 => {
-                            if idx + 1 >= buf.len() {
-                                return Err(MessageError::InvalidOptionLength);
-                            }
-
-                            delta = u16::from_be(u8_to_unsigned_be!(
-                                buf,
-                                idx,
-                                idx + 1,
-                                u16
-                            )) + 269;
-                            idx += 2;
-                        }
-                        15 => {
-                            return Err(MessageError::InvalidOptionDelta);
-                        }
-                        _ => {}
-                    };
-
-                    // Check for special length characters
-                    match length {
-                        13 => {
-                            if idx >= buf.len() {
-                                return Err(MessageError::InvalidOptionLength);
-                            }
-
-                            length = buf[idx] as usize + 13;
-                            idx += 1;
-                        }
-                        14 => {
-                            if idx + 1 >= buf.len() {
-                                return Err(MessageError::InvalidOptionLength);
-                            }
-
-                            length = (u16::from_be(u8_to_unsigned_be!(
-                                buf,
-                                idx,
-                                idx + 1,
-                                u16
-                            )) + 269)
-                                as usize;
-                            idx += 2;
-                        }
-                        15 => {
-                            return Err(MessageError::InvalidOptionLength);
-                        }
-                        _ => {}
-                    };
-
-                    options_number += delta;
-
-                    let end = idx + length;
-                    if end > buf.len() {
-                        return Err(MessageError::InvalidOptionLength);
-                    }
-                    let options_value = buf[idx..end].to_vec();
-
-                    options
-                        .entry(options_number)
-                        .or_default()
-                        .push_back(options_value);
-
-                    idx += length;
-                }
-
-                let payload = if idx < buf.len() {
-                    buf[(idx + 1)..buf.len()].to_vec()
-                } else {
-                    Vec::new()
-                };
-
-                Ok(Packet {
-                    header,
-                    token,
-                    options,
-                    payload,
-                })
-            }
-            Err(_) => Err(MessageError::InvalidHeader),
-        }
-    }
-
-    /// Returns a vector of bytes representing the Packet.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, MessageError> {
-        self.to_bytes_internal(Some(Self::MAX_SIZE))
-    }
-
-    /// Returns a vector of bytes representing the Packet, using a custom
-    /// `limit` instead of [`Packet::MAX_SIZE`] for the message size check.
-    pub fn to_bytes_with_limit(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<u8>, MessageError> {
-        self.to_bytes_internal(Some(limit))
-    }
-
-    /// Returns a vector of bytes representing the Packet, skipping the message
-    /// size check against [`Packet::MAX_SIZE`].
-    pub fn to_bytes_unlimited(&self) -> Result<Vec<u8>, MessageError> {
-        self.to_bytes_internal(None)
-    }
-
-    fn to_bytes_internal(
-        &self,
-        limit: Option<usize>,
-    ) -> Result<Vec<u8>, MessageError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8, PACKET_MAX_SIZE>, MessageError> {
         let mut options_delta_length = 0;
-        let mut options_bytes: Vec<u8> = Vec::new();
-        for (number, value_list) in self.options.iter() {
-            for value in value_list.iter() {
-                let mut header: Vec<u8> = Vec::with_capacity(1 + 2 + 2);
-                let delta = number - options_delta_length;
+        let mut options_bytes: Vec<u8, PACKET_MAX_SIZE> = Vec::new();
+        let mut i = 0;
+        while i < self.options.len() {
+            let start_option_pair = self.options.get(i);
+            let mut j = i;
+            while j < self.options.len()
+                && start_option_pair.unwrap().num == self.options.get(j).unwrap().num
+            {
+                let value = self.options.get(j).unwrap().value;
+                let mut header = Vec::<u8, 5>::new();
+                let delta = start_option_pair.unwrap().num - options_delta_length;
 
                 let mut byte: u8 = 0;
                 if delta <= 12 {
@@ -670,27 +786,25 @@ impl Packet {
                 } else {
                     byte |= 14;
                 }
-                header.push(byte);
+                let _ = header.push(byte);
 
                 if delta > 12 && delta < 269 {
-                    header.push((delta - 13) as u8);
+                    let _ = header.push((delta - 13) as u8);
                 } else if delta >= 269 {
                     let fix = delta - 269;
-                    header.push((fix >> 8) as u8);
-                    header.push((fix & 0xFF) as u8);
+                    let _ = header.push((fix >> 8) as u8);
+                    let _ = header.push((fix & 0xFF) as u8);
                 }
 
                 if value.len() > 12 && value.len() < 269 {
-                    header.push((value.len() - 13) as u8);
+                    let _ = header.push((value.len() - 13) as u8);
                 } else if value.len() >= 269 {
                     let fix = (value.len() - 269) as u16;
-                    header.push((fix >> 8) as u8);
-                    header.push((fix & 0xFF) as u8);
+                    let _ = header.push((fix >> 8) as u8);
+                    let _ = header.push((fix & 0xFF) as u8);
                 }
 
                 options_delta_length += delta;
-
-                options_bytes.reserve(header.len() + value.len());
                 unsafe {
                     use core::ptr;
                     let buf_len = options_bytes.len();
@@ -704,210 +818,355 @@ impl Packet {
                         options_bytes.as_mut_ptr().add(buf_len + header.len()),
                         value.len(),
                     );
-                    options_bytes
-                        .set_len(buf_len + header.len() + value.len());
+                    options_bytes.set_len(buf_len + header.len() + value.len());
                 }
+                j += 1;
             }
+            i = j;
         }
 
         let mut buf_length = 4 + self.payload.len() + self.token.len();
-        if self.header.code != MessageClass::Empty && !self.payload.is_empty()
-        {
+        if self.get_code() != MessageClass::Empty && !self.payload.is_empty() {
             buf_length += 1;
         }
         buf_length += options_bytes.len();
 
-        if limit.is_some() && buf_length > limit.unwrap() {
+        if PACKET_MAX_SIZE < buf_length {
             return Err(MessageError::InvalidPacketLength);
         }
 
-        let mut buf: Vec<u8> = Vec::with_capacity(buf_length);
-        let header_result = self.header.to_raw().serialize_into(&mut buf);
+        let mut buf = Vec::<u8, PACKET_MAX_SIZE>::new();
+        let _ = buf.push(self.ver_type_tkl);
+        let _ = buf.push(self.code.into());
+        let id_bytes = self.message_id.to_be_bytes();
+        buf.extend(id_bytes);
 
-        match header_result {
-            Ok(_) => {
-                buf.reserve(self.token.len() + options_bytes.len());
-                unsafe {
-                    use core::ptr;
-                    let buf_len = buf.len();
-                    ptr::copy(
-                        self.token.as_ptr(),
-                        buf.as_mut_ptr().add(buf_len),
-                        self.token.len(),
-                    );
-                    ptr::copy(
-                        options_bytes.as_ptr(),
-                        buf.as_mut_ptr().add(buf_len + self.token.len()),
-                        options_bytes.len(),
-                    );
-                    buf.set_len(
-                        buf_len + self.token.len() + options_bytes.len(),
-                    );
-                }
-
-                if self.header.code != MessageClass::Empty
-                    && !self.payload.is_empty()
-                {
-                    buf.push(0xFF);
-                    buf.reserve(self.payload.len());
-                    unsafe {
-                        use core::ptr;
-                        let buf_len = buf.len();
-                        ptr::copy(
-                            self.payload.as_ptr(),
-                            buf.as_mut_ptr().add(buf.len()),
-                            self.payload.len(),
-                        );
-                        buf.set_len(buf_len + self.payload.len());
-                    }
-                }
-                Ok(buf)
-            }
-            Err(_) => Err(MessageError::InvalidHeader),
+        unsafe {
+            use core::ptr;
+            let buf_len = buf.len();
+            ptr::copy(
+                self.token.as_ptr(),
+                buf.as_mut_ptr().add(buf_len),
+                self.token.len(),
+            );
+            ptr::copy(
+                options_bytes.as_ptr(),
+                buf.as_mut_ptr().add(buf_len + self.token.len()),
+                options_bytes.len(),
+            );
+            buf.set_len(buf_len + self.token.len() + options_bytes.len());
         }
+
+        if self.get_code() != MessageClass::Empty && !self.payload.is_empty() {
+            let _ = buf.push(0xFF);
+            unsafe {
+                use core::ptr;
+                let buf_len = buf.len();
+                ptr::copy(
+                    self.payload.as_ptr(),
+                    buf.as_mut_ptr().add(buf.len()),
+                    self.payload.len(),
+                );
+                buf.set_len(buf_len + self.payload.len());
+            }
+        }
+        Ok(buf)
+    }
+
+    fn to_uint<T>(&self, encoded: &[u8]) -> Result<T, IncompatibleOptionValueFormat>
+    where
+        T: TryFrom<u64>
+            + From<u8>
+            + core::ops::Shl<usize, Output = T>
+            + core::ops::Add<Output = T>
+            + Default,
+    {
+        let value_size = size_of::<T>();
+        if encoded.len() > value_size {
+            let mut s = String::<50>::new();
+            match write!(
+                s,
+                "overflow: got {} bytes, expected {}",
+                encoded.len(),
+                value_size
+            ) {
+                Err(_) => return Err(IncompatibleOptionValueFormat { message: s }),
+                _ => {}
+            }
+        }
+        Ok(encoded
+            .iter()
+            .fold(T::default(), |acc, &b| (acc << 8) + T::from(b)))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{header, option_value::OptionValueString};
-    use alloc::borrow::ToOwned;
+
+    #[test]
+    fn test_header_codes() {
+        for code in 0..255 {
+            let p = Packet::new(
+                MessageType::Confirmable,
+                code.into(),
+                /* version= */ 1,
+                /* message_id= */ 1,
+                /* token= */ &[],
+                /* options= */ &mut Vec::new(),
+                /* payload= */ &[],
+            );
+            let class: MessageClass = code.into();
+            // valid items
+            if !matches!(class, MessageClass::Reserved(_)) {
+                assert_eq!(u8::from(class), code);
+                assert_eq!(class, p.get_code());
+            }
+        }
+    }
+
+    #[test]
+    fn from_bytes_fail() {
+        let b: &[u8] = &[1, 2, 3];
+        let p = Packet::from_bytes(b);
+        assert_eq!(MessageError::InvalidPacketLength, p.unwrap_err());
+    }
+
+    #[test]
+    fn types() {
+        let p_acked = Packet::new(
+            MessageType::Acknowledgement,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 1,
+            /* token= */ &[],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ &[],
+        );
+        assert_eq!(MessageType::Acknowledgement, p_acked.get_type());
+        let p_confirmed = Packet::new(
+            MessageType::Confirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 1,
+            /* token= */ &[],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ &[],
+        );
+        assert_eq!(MessageType::Confirmable, p_confirmed.get_type());
+        let p_notconfirmed = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 1,
+            /* token= */ &[],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ &[],
+        );
+        assert_eq!(MessageType::NonConfirmable, p_notconfirmed.get_type());
+        let p_reset = Packet::new(
+            MessageType::Reset,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 1,
+            /* token= */ &[],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ &[],
+        );
+        assert_eq!(MessageType::Reset, p_reset.get_type());
+    }
 
     #[test]
     fn test_decode_packet_with_options() {
         let buf = [
-            0x44, 0x01, 0x84, 0x9e, 0x51, 0x55, 0x77, 0xe8, 0xb2, 0x48, 0x69,
-            0x04, 0x54, 0x65, 0x73, 0x74, 0x43, 0x61, 0x3d, 0x31,
+            0x44, 0x01, 0x84, 0x9e, 0x51, 0x55, 0x77, 0xe8, 0xb2, 0x48, 0x69, 0x04, 0x54, 0x65,
+            0x73, 0x74, 0x43, 0x61, 0x3d, 0x31,
         ];
         let packet = Packet::from_bytes(&buf);
         assert!(packet.is_ok());
         let packet = packet.unwrap();
-        assert_eq!(packet.header.get_version(), 1);
-        assert_eq!(packet.header.get_type(), header::MessageType::Confirmable);
-        assert_eq!(packet.header.get_token_length(), 4);
-        assert_eq!(
-            packet.header.code,
-            header::MessageClass::Request(header::RequestType::Get)
-        );
-        assert_eq!(packet.header.message_id, 33950);
-        assert_eq!(*packet.get_token(), vec![0x51, 0x55, 0x77, 0xE8]);
-        assert_eq!(packet.options.len(), 2);
+        assert_eq!(packet.get_version(), 1);
+        assert_eq!(packet.get_type(), MessageType::Confirmable);
+        assert_eq!(packet.get_token_length(), 4);
+        assert_eq!(packet.get_code(), MessageClass::Request(RequestType::Get));
+        assert_eq!(packet.get_message_id(), 33950);
+        assert_eq!(packet.get_token(), &[0x51, 0x55, 0x77, 0xE8]);
+        assert_eq!(packet.options.len(), 3);
 
-        let uri_path = packet.get_option(CoapOption::UriPath);
-        assert!(uri_path.is_some());
-        let uri_path = uri_path.unwrap();
-        let mut expected_uri_path = LinkedList::new();
-        expected_uri_path.push_back("Hi".as_bytes().to_vec());
-        expected_uri_path.push_back("Test".as_bytes().to_vec());
-        assert_eq!(*uri_path, expected_uri_path);
+        let mut uri_path_iter = packet.get_options(CoapOption::UriPath);
+        let patch_part1 = uri_path_iter.next();
+        assert!(patch_part1.is_some());
+        assert_eq!(patch_part1.unwrap().value, "Hi".as_bytes());
+        let patch_part2 = uri_path_iter.next();
+        assert!(patch_part2.is_some());
+        assert_eq!(patch_part2.unwrap().value, "Test".as_bytes());
+        assert!(uri_path_iter.next().is_none());
 
-        let uri_query = packet.get_option(CoapOption::UriQuery);
-        assert!(uri_query.is_some());
-        let uri_query = uri_query.unwrap();
-        let mut expected_uri_query = LinkedList::new();
-        expected_uri_query.push_back("a=1".as_bytes().to_vec());
-        assert_eq!(*uri_query, expected_uri_query);
+        let mut uri_query_iter = packet.get_options(CoapOption::UriQuery);
+        let uri_query_item = uri_query_iter.next();
+        assert!(uri_query_item.is_some());
+        assert_eq!(uri_query_item.unwrap().value, "a=1".as_bytes());
+        assert!(uri_query_iter.next().is_none());
     }
 
     #[test]
     fn test_decode_packet_with_payload() {
         let buf = [
-            0x64, 0x45, 0x13, 0xFD, 0xD0, 0xE2, 0x4D, 0xAC, 0xFF, 0x48, 0x65,
-            0x6C, 0x6C, 0x6F,
+            0x64, 0x45, 0x13, 0xFD, 0xD0, 0xE2, 0x4D, 0xAC, 0xFF, 0x48, 0x65, 0x6C, 0x6C, 0x6F,
         ];
         let packet = Packet::from_bytes(&buf);
         assert!(packet.is_ok());
         let packet = packet.unwrap();
-        assert_eq!(packet.header.get_version(), 1);
+        assert_eq!(packet.get_version(), 1);
+        assert_eq!(packet.get_type(), MessageType::Acknowledgement);
+        assert_eq!(packet.get_token_length(), 4);
         assert_eq!(
-            packet.header.get_type(),
-            header::MessageType::Acknowledgement
+            packet.get_code(),
+            MessageClass::Response(ResponseType::Content)
         );
-        assert_eq!(packet.header.get_token_length(), 4);
-        assert_eq!(
-            packet.header.code,
-            header::MessageClass::Response(header::ResponseType::Content)
-        );
-        assert_eq!(packet.header.message_id, 5117);
-        assert_eq!(*packet.get_token(), vec![0xD0, 0xE2, 0x4D, 0xAC]);
+        assert_eq!(packet.message_id, 5117);
+        assert_eq!(packet.get_token(), &[0xD0, 0xE2, 0x4D, 0xAC]);
         assert_eq!(packet.payload, "Hello".as_bytes().to_vec());
     }
 
     #[test]
     fn test_encode_packet_with_options() {
-        let mut packet = Packet::new();
-        packet.header.set_version(1);
-        packet.header.set_type(header::MessageType::Confirmable);
-        packet.header.code =
-            header::MessageClass::Request(header::RequestType::Get);
-        packet.header.message_id = 33950;
-        packet.set_token(vec![0x51, 0x55, 0x77, 0xE8]);
-        packet.add_option(CoapOption::UriPath, b"Hi".to_vec());
-        packet.add_option(CoapOption::UriPath, b"Test".to_vec());
-        packet.add_option(CoapOption::UriQuery, b"a=1".to_vec());
+        let options = &[
+            OptionPair {
+                num: CoapOption::UriPath.into(),
+                value: "Hi".as_bytes(),
+            },
+            OptionPair {
+                num: CoapOption::UriPath.into(),
+                value: "Test".as_bytes(),
+            },
+            OptionPair {
+                num: CoapOption::UriQuery.into(),
+                value: "a=1".as_bytes(),
+            },
+        ];
+        let packet = Packet::new(
+            MessageType::Confirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 33950,
+            /* token= */ &[0x51, 0x55, 0x77, 0xE8],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ &[],
+        );
         assert_eq!(
             packet.to_bytes().unwrap(),
-            vec![
-                0x44, 0x01, 0x84, 0x9e, 0x51, 0x55, 0x77, 0xe8, 0xb2, 0x48,
-                0x69, 0x04, 0x54, 0x65, 0x73, 0x74, 0x43, 0x61, 0x3d, 0x31
+            &[
+                0x44, 0x01, 0x84, 0x9e, 0x51, 0x55, 0x77, 0xe8, 0xb2, 0x48, 0x69, 0x04, 0x54, 0x65,
+                0x73, 0x74, 0x43, 0x61, 0x3d, 0x31
             ]
         );
     }
 
     #[test]
     fn test_encode_packet_with_payload() {
-        let mut packet = Packet::new();
-        packet.header.set_version(1);
-        packet.header.set_type(header::MessageType::Acknowledgement);
-        packet.header.code =
-            header::MessageClass::Response(header::ResponseType::Content);
-        packet.header.message_id = 5117;
-        packet.set_token(vec![0xD0, 0xE2, 0x4D, 0xAC]);
-        packet.payload = "Hello".as_bytes().to_vec();
+        let packet = Packet::new(
+            MessageType::Acknowledgement,
+            MessageClass::Response(ResponseType::Content),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ "Hello".as_bytes(),
+        );
         assert_eq!(
             packet.to_bytes().unwrap(),
-            vec![
-                0x64, 0x45, 0x13, 0xFD, 0xD0, 0xE2, 0x4D, 0xAC, 0xFF, 0x48,
-                0x65, 0x6C, 0x6C, 0x6F
-            ]
+            &[0x64, 0x45, 0x13, 0xFD, 0xD0, 0xE2, 0x4D, 0xAC, 0xFF, 0x48, 0x65, 0x6C, 0x6C, 0x6F]
         );
     }
 
     #[test]
     fn test_encode_decode_content_format() {
-        let mut packet = Packet::new();
-        packet.set_content_format(ContentFormat::TextPlain);
+        let options = &[OptionPair {
+            num: CoapOption::ContentFormat.into(),
+            value: &u16::try_from(usize::from(ContentFormat::TextPlain))
+                .unwrap()
+                .to_be_bytes(),
+        }];
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ "Hello".as_bytes(),
+        );
         assert_eq!(
             ContentFormat::TextPlain,
-            packet.get_content_format().unwrap()
-        )
+            ContentFormat::try_from(packet.get_content_format_value().unwrap() as usize)
+                .ok()
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_encode_decode_content_format_without_msb() {
-        let mut packet = Packet::new();
-        packet.set_content_format(ContentFormat::ApplicationJSON);
+        let options = &[OptionPair {
+            num: CoapOption::ContentFormat.into(),
+            value: &u16::try_from(usize::from(ContentFormat::ApplicationJSON))
+                .unwrap()
+                .to_be_bytes(),
+        }];
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ "Hello".as_bytes(),
+        );
         assert_eq!(
             ContentFormat::ApplicationJSON,
-            packet.get_content_format().unwrap()
-        )
+            ContentFormat::try_from(packet.get_content_format_value().unwrap() as usize)
+                .ok()
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_encode_decode_content_format_with_msb() {
-        let mut packet = Packet::new();
-        packet.set_content_format(ContentFormat::ApplicationSensmlXML);
+        let options = &[OptionPair {
+            num: CoapOption::ContentFormat.into(),
+            value: &u16::try_from(usize::from(ContentFormat::ApplicationSensmlXML))
+                .unwrap()
+                .to_be_bytes(),
+        }];
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ "Hello".as_bytes(),
+        );
         assert_eq!(
             ContentFormat::ApplicationSensmlXML,
-            packet.get_content_format().unwrap()
-        )
+            ContentFormat::try_from(packet.get_content_format_value().unwrap() as usize)
+                .ok()
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_decode_empty_content_format() {
-        let packet = Packet::new();
-        assert!(packet.get_content_format().is_none());
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ "Hello".as_bytes(),
+        );
+        assert!(packet.get_content_format_value().is_none());
     }
 
     #[test]
@@ -937,71 +1196,128 @@ mod test {
 
     #[test]
     fn options() {
-        let mut p = Packet::new();
-        p.add_option(CoapOption::UriHost, vec![0]);
-        p.add_option(CoapOption::UriPath, vec![1]);
-        p.add_option(CoapOption::ETag, vec![2]);
-        p.clear_option(CoapOption::ETag);
-        assert_eq!(3, p.options().len());
+        let options = &[
+            OptionPair {
+                num: CoapOption::UriHost.into(),
+                value: &[0],
+            },
+            OptionPair {
+                num: CoapOption::UriPath.into(),
+                value: &[1],
+            },
+            OptionPair {
+                num: CoapOption::ETag.into(),
+                value: &[2],
+            },
+        ];
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ "Hello".as_bytes(),
+        );
+        assert_eq!(3, packet.options().len());
 
-        let bytes = p.to_bytes().unwrap();
-        let mut pp = Packet::from_bytes(&bytes).unwrap();
-        assert_eq!(2, pp.options().len());
-
-        let mut values = LinkedList::new();
-        values.push_back(vec![3]);
-        values.push_back(vec![4]);
-        pp.set_option(CoapOption::Oscore, values);
+        let bytes = packet.to_bytes().unwrap();
+        let pp = Packet::from_bytes(&bytes).unwrap();
         assert_eq!(3, pp.options().len());
     }
 
+    // #[test]
+    // fn test_option_u32_format() {
+    //     let options = &[
+    //         OptionPair {
+    //             num: CoapOption::Observe.into(),
+    //             value: [],
+    //         },
+    //         OptionPair {
+    //             num: CoapOption::Observe.into(),
+    //             value: &[1],
+    //         },
+    //         OptionPair {
+    //             num: CoapOption::Observe.into(),
+    //             value: &[2],
+    //         },
+    //     ];
+    //     let packet = Packet::new(
+    //         MessageType::NonConfirmable,
+    //         MessageClass::Request(RequestType::Get),
+    //         /* version= */ 1,
+    //         /* message_id= */ 5117,
+    //         /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+    //         /* options= */ &mut Vec::from_slice(options).unwrap(),
+    //         /* payload= */ "Hello".as_bytes(),
+    //     );
+    //     let values = vec![0, 100, 1000, 10000, u32::MAX];
+    //     let expected = values.iter().map(|&x| Ok(OptionValueU32(x))).collect();
+    //     assert_eq!(actual, Some(expected));
+    // }
+
+    // #[test]
+    // fn test_option_utf8_format() {
+    //     let mut p = Packet::new();
+    //     let option_key = CoapOption::UriPath;
+    //     let values = vec!["", "simple", "unicode 😁 stuff"];
+    //     for &value in &values {
+    //         p.add_option_as(option_key, OptionValueString(value.to_owned()));
+    //     }
+    //     let expected = values
+    //         .iter()
+    //         .map(|&x| Ok(OptionValueString(x.to_owned())))
+    //         .collect();
+    //     let actual = p.get_options_as::<OptionValueString>(option_key);
+    //     assert_eq!(actual, Some(expected));
+    // }
+
     #[test]
-    fn test_option_u32_format() {
-        let mut p = Packet::new();
-        let option_key = CoapOption::Observe;
-        let values = vec![0, 100, 1000, 10000, u32::MAX];
-        for &value in &values {
-            p.add_option_as(option_key, OptionValueU32(value));
-        }
-        let expected = values.iter().map(|&x| Ok(OptionValueU32(x))).collect();
-        let actual = p.get_options_as::<OptionValueU32>(option_key);
-        assert_eq!(actual, Some(expected));
+    fn observe_none() {
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::new(),
+            /* payload= */ "Hello".as_bytes(),
+        );
+        assert_eq!(None, packet.get_observe_value());
+        // p.set_observe_value(0);
+        // assert_eq!(Some(Ok(0)), p.get_observe_value());
     }
 
     #[test]
-    fn test_option_utf8_format() {
-        let mut p = Packet::new();
-        let option_key = CoapOption::UriPath;
-        let values = vec!["", "simple", "unicode 😁 stuff"];
-        for &value in &values {
-            p.add_option_as(option_key, OptionValueString(value.to_owned()));
-        }
-        let expected = values
-            .iter()
-            .map(|&x| Ok(OptionValueString(x.to_owned())))
-            .collect();
-        let actual = p.get_options_as::<OptionValueString>(option_key);
-        assert_eq!(actual, Some(expected));
+    fn observe_some() {
+        let options = &[OptionPair {
+            num: CoapOption::Observe.into(),
+            value: &[10],
+        }];
+        let packet = Packet::new(
+            MessageType::NonConfirmable,
+            MessageClass::Request(RequestType::Get),
+            /* version= */ 1,
+            /* message_id= */ 5117,
+            /* token= */ &[0xD0, 0xE2, 0x4D, 0xAC],
+            /* options= */ &mut Vec::from_slice(options).unwrap(),
+            /* payload= */ "Hello".as_bytes(),
+        );
+        assert_eq!(Some(10), packet.get_observe_value());
     }
 
     #[test]
-    fn observe() {
-        let mut p = Packet::new();
-        assert_eq!(None, p.get_observe_value());
-        p.set_observe_value(0);
-        assert_eq!(Some(Ok(0)), p.get_observe_value());
-    }
-
-    #[test]
-    fn to_bytes_limits_work() {
-        let mut packet = Packet::new();
-
-        packet.payload = vec![0u8; 1200];
-        assert!(packet.to_bytes().is_ok());
-
-        packet.payload = vec![0u8; 1300];
-        assert_eq!(packet.to_bytes(), Err(MessageError::InvalidPacketLength));
-        assert!(packet.to_bytes_with_limit(1380).is_ok());
-        assert!(packet.to_bytes_unlimited().is_ok());
+    fn options_limit_exceeded() {
+        let buf = [
+            0x40, 0x01, 0x00, 0x00, 0x61, 0x31, 0x01, 0x32, 0x01, 0x33, 0x01, 0x34, 0x01, 0x35,
+            0x01, 0x36, 0x01, 0x37, 0x01, 0x38, 0x01, 0x39, 0x02, 0x31, 0x30, 0x02, 0x31, 0x31,
+            0x02, 0x31, 0x32, 0x02, 0x31, 0x33, 0x02, 0x31, 0x34, 0x02, 0x31, 0x35, 0x02, 0x31,
+            0x36, 0x02, 0x31, 0x37, 0x02, 0x31, 0x38, 0x02, 0x31, 0x39, 0x02, 0x32, 0x30, 0x02,
+            0x32, 0x31, 0x02, 0x32, 0x32, 0x02, 0x32, 0x33, 0x02, 0x32, 0x34, 0x02, 0x32, 0x35,
+            0x02, 0x32, 0x36, 0x02, 0x32, 0x37, 0x02, 0x32, 0x38, 0x02, 0x32, 0x39, 0x02, 0x33,
+            0x30, 0x02, 0x33, 0x31, 0x02, 0x33, 0x32, 0x02, 0x33, 0x33,
+        ];
+        let p = Packet::from_bytes(&buf);
+        assert_eq!(MessageError::OptionsLimitExceeded, p.unwrap_err());
     }
 }

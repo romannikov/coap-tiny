@@ -1,0 +1,16 @@
+[package]
+name = "embedded-coap"
+version = "0.1.0"
+readme = "README.md"
+keywords = ["coap"]
+authors = ["Dmitry Romannikov <dmitry.romannikov@gmail.com>"]
+categories = ["network-programming", "no-std", "embedded"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+doctest = false
+
+[dependencies]
+coap-message = "0.2.3"
+heapless = "0.8.0"

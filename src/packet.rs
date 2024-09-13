@@ -612,6 +612,10 @@ impl<'a> Packet<'a> {
         &self.token
     }
 
+    pub fn get_payload(&self) -> &[u8] {
+        &self.payload
+    }
+
     pub fn get_options(&self, tp: CoapOption) -> impl Iterator<Item = &OptionPair<'a>> {
         self.options.iter().filter(move |&p| p.num == tp.into())
     }

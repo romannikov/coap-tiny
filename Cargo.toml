@@ -1,5 +1,5 @@
 [package]
-name = "embedded-coap"
+name = "coap-tiny"
 version = "0.1.0"
 readme = "README.md"
 keywords = ["coap"]
